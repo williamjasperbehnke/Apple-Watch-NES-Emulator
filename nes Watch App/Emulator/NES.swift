@@ -1,5 +1,4 @@
 import CoreGraphics
-import Foundation
 
 final class NES {
     private let bus = Bus()

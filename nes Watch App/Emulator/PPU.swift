@@ -1,10 +1,9 @@
-import Foundation
-
 final class PPU {
     private(set) var frameBuffer = FrameBuffer()
 
     private var cartridge: Cartridge?
     private var mirroring: Mirroring = .horizontal
+    private var dataBus: UInt8 = 0
 
     private var ctrl: UInt8 = 0
     private var mask: UInt8 = 0
@@ -45,9 +44,10 @@ final class PPU {
     func cpuRead(addr: UInt16) -> UInt8 {
         switch addr {
         case 0x2002:
-            let value = status
+            let value = (status & 0xE0) | (dataBus & 0x1F)
             status &= 0x7F
             addressLatch = false
+            dataBus = value
             return value
         case 0x2007:
             let value: UInt8
@@ -59,13 +59,15 @@ final class PPU {
                 readBuffer = ppuReadMemory(vramAddr)
             }
             vramAddr &+= (ctrl & 0x04) != 0 ? 32 : 1
+            dataBus = value
             return value
         default:
-            return 0
+            return dataBus
         }
     }
 
     func cpuWrite(addr: UInt16, data: UInt8) {
+        dataBus = data
         switch addr {
         case 0x2000:
             ctrl = data

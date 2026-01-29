@@ -1,5 +1,3 @@
-import Foundation
-
 final class Controller {
     enum Button: UInt8 {
         case a = 0x01
@@ -37,10 +35,10 @@ final class Controller {
 
     func read() -> UInt8 {
         if strobe {
-            return (state & 0x01) | 0x40
+            return (state & 0x01)
         }
         let value = shift & 0x01
         shift >>= 1
-        return value | 0x40
+        return value
     }
 }

@@ -1,5 +1,3 @@
-import Foundation
-
 final class CPU6502 {
     enum Flag: UInt8 {
         case C = 0x01
@@ -27,11 +25,19 @@ final class CPU6502 {
         case rel
     }
 
+    enum AccessKind {
+        case read
+        case write
+        case readModifyWrite
+        case implied
+    }
+
     struct Instruction {
         let name: String
         let operate: () -> UInt8
         let addrMode: () -> UInt8
         let mode: AddressingMode
+        let access: AccessKind
         let cycles: UInt8
     }
 
@@ -71,10 +77,10 @@ final class CPU6502 {
         if getFlag(.I) == 0 {
             push(UInt8((pc >> 8) & 0xFF))
             push(UInt8(pc & 0xFF))
+            setFlag(.I, true)
+            pushStatus(setBreak: false)
             setFlag(.B, false)
             setFlag(.U, true)
-            setFlag(.I, true)
-            push(status)
             let lo = read(0xFFFE)
             let hi = read(0xFFFF)
             pc = UInt16(hi) << 8 | UInt16(lo)
@@ -84,23 +90,29 @@ final class CPU6502 {
     func nmi() {
         push(UInt8((pc >> 8) & 0xFF))
         push(UInt8(pc & 0xFF))
+        setFlag(.I, true)
+        pushStatus(setBreak: false)
         setFlag(.B, false)
         setFlag(.U, true)
-        setFlag(.I, true)
-        push(status)
         let lo = read(0xFFFA)
         let hi = read(0xFFFB)
         pc = UInt16(hi) << 8 | UInt16(lo)
     }
 
     func step() -> Int {
-        opcode = read(pc)
+        opcode = bus?.cpuReadOpcode(pc) ?? 0
         pc &+= 1
 
         let instruction = instructions[Int(opcode)]
         let additional1 = instruction.addrMode()
         let additional2 = instruction.operate()
         let cycles = instruction.cycles + (additional1 & additional2)
+        status |= Flag.U.rawValue
+        if let bus, bus.isIrqPending(), getFlag(.I) == 0 {
+            bus.acknowledgeIrq()
+            irq()
+        }
+        bus?.tick(cycles: Int(cycles))
         return Int(cycles)
     }
 
@@ -188,8 +200,15 @@ final class CPU6502 {
         pc &+= 1
         let hi = read(pc)
         pc &+= 1
-        addrAbs = (UInt16(hi) << 8 | UInt16(lo)) &+ UInt16(x)
-        return (addrAbs & 0xFF00) != (UInt16(hi) << 8) ? 1 : 0
+        let base = UInt16(hi) << 8 | UInt16(lo)
+        addrAbs = base &+ UInt16(x)
+        let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
+        let access = instructions[Int(opcode)].access
+        if access == .write || (access == .read && pageCross) || access == .readModifyWrite {
+            let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
+            _ = read(dummyAddr)
+        }
+        return pageCross ? 1 : 0
     }
 
     private func ABY() -> UInt8 {
@@ -197,8 +216,15 @@ final class CPU6502 {
         pc &+= 1
         let hi = read(pc)
         pc &+= 1
-        addrAbs = (UInt16(hi) << 8 | UInt16(lo)) &+ UInt16(y)
-        return (addrAbs & 0xFF00) != (UInt16(hi) << 8) ? 1 : 0
+        let base = UInt16(hi) << 8 | UInt16(lo)
+        addrAbs = base &+ UInt16(y)
+        let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
+        let access = instructions[Int(opcode)].access
+        if access == .write || (access == .read && pageCross) || access == .readModifyWrite {
+            let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
+            _ = read(dummyAddr)
+        }
+        return pageCross ? 1 : 0
     }
 
     private func IND() -> UInt8 {
@@ -227,8 +253,15 @@ final class CPU6502 {
         pc &+= 1
         let lo = read(UInt16(t))
         let hi = read(UInt16(UInt8(t &+ 1)))
-        addrAbs = (UInt16(hi) << 8 | UInt16(lo)) &+ UInt16(y)
-        return (addrAbs & 0xFF00) != (UInt16(hi) << 8) ? 1 : 0
+        let base = UInt16(hi) << 8 | UInt16(lo)
+        addrAbs = base &+ UInt16(y)
+        let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
+        let access = instructions[Int(opcode)].access
+        if (access == .write && pageCross) || (access == .read && pageCross) || (access == .readModifyWrite && pageCross) {
+            let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
+            _ = read(dummyAddr)
+        }
+        return pageCross ? 1 : 0
     }
 
     private func REL() -> UInt8 {
@@ -261,6 +294,9 @@ final class CPU6502 {
 
     private func ASL() -> UInt8 {
         let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
         let result = UInt16(value) << 1
         setFlag(.C, (result & 0xFF00) != 0)
         let output = UInt8(result & 0x00FF)
@@ -297,7 +333,8 @@ final class CPU6502 {
         push(UInt8((pc >> 8) & 0xFF))
         push(UInt8(pc & 0xFF))
         setFlag(.B, true)
-        push(status)
+        pushStatus(setBreak: true)
+        setFlag(.B, false)
         setFlag(.I, true)
         let lo = read(0xFFFE)
         let hi = read(0xFFFF)
@@ -338,10 +375,14 @@ final class CPU6502 {
     }
 
     private func DEC() -> UInt8 {
-        let value = fetch() &- 1
-        write(addrAbs, value)
-        setFlag(.Z, value == 0)
-        setFlag(.N, (value & 0x80) != 0)
+        let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
+        let result = value &- 1
+        write(addrAbs, result)
+        setFlag(.Z, result == 0)
+        setFlag(.N, (result & 0x80) != 0)
         return 0
     }
 
@@ -367,10 +408,14 @@ final class CPU6502 {
     }
 
     private func INC() -> UInt8 {
-        let value = fetch() &+ 1
-        write(addrAbs, value)
-        setFlag(.Z, value == 0)
-        setFlag(.N, (value & 0x80) != 0)
+        let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
+        let result = value &+ 1
+        write(addrAbs, result)
+        setFlag(.Z, result == 0)
+        setFlag(.N, (result & 0x80) != 0)
         return 0
     }
 
@@ -424,6 +469,9 @@ final class CPU6502 {
 
     private func LSR() -> UInt8 {
         let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
         setFlag(.C, (value & 0x01) != 0)
         let result = value >> 1
         setFlag(.Z, result == 0)
@@ -437,7 +485,17 @@ final class CPU6502 {
     }
 
     private func NOP() -> UInt8 {
+        if instructions[Int(opcode)].mode != .imp {
+            _ = fetch()
+        }
         return 0
+    }
+
+    private func NOPR() -> UInt8 {
+        if instructions[Int(opcode)].mode != .imp {
+            _ = fetch()
+        }
+        return 1
     }
 
     private func ORA() -> UInt8 {
@@ -448,12 +506,19 @@ final class CPU6502 {
     }
 
     private func PHA() -> UInt8 { push(a); return 0 }
-    private func PHP() -> UInt8 { push(status | Flag.B.rawValue | Flag.U.rawValue); return 0 }
+    private func PHP() -> UInt8 { pushStatus(setBreak: true); return 0 }
     private func PLA() -> UInt8 { a = pop(); setFlag(.Z, a == 0); setFlag(.N, (a & 0x80) != 0); return 0 }
-    private func PLP() -> UInt8 { status = pop(); setFlag(.U, true); return 0 }
+    private func PLP() -> UInt8 {
+        status = pop()
+        setFlag(.U, true)
+        return 0
+    }
 
     private func ROL() -> UInt8 {
         let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
         let result = UInt16(value) << 1 | UInt16(getFlag(.C))
         setFlag(.C, (result & 0xFF00) != 0)
         let output = UInt8(result & 0x00FF)
@@ -469,12 +534,15 @@ final class CPU6502 {
 
     private func ROR() -> UInt8 {
         let value = fetch()
+        if instructions[Int(opcode)].mode != .imp {
+            write(addrAbs, value)
+        }
         let result = UInt16(getFlag(.C)) << 7 | UInt16(value >> 1)
         setFlag(.C, (value & 0x01) != 0)
         let output = UInt8(result & 0x00FF)
         setFlag(.Z, output == 0)
         setFlag(.N, (output & 0x80) != 0)
-        if instructions[Int(opcode)].addrMode as AnyObject === IMP as AnyObject {
+        if instructions[Int(opcode)].mode == .imp {
             a = output
         } else {
             write(addrAbs, output)
@@ -484,7 +552,6 @@ final class CPU6502 {
 
     private func RTI() -> UInt8 {
         status = pop()
-        setFlag(.B, false)
         setFlag(.U, true)
         let lo = pop()
         let hi = pop()
@@ -527,9 +594,11 @@ final class CPU6502 {
 
     private func branch(_ condition: Bool) -> UInt8 {
         if condition {
+            _ = read(pc)
             let oldPc = pc
             pc &+= addrRel
             if (pc & 0xFF00) != (oldPc & 0xFF00) {
+                _ = read((oldPc & 0xFF00) | (pc & 0x00FF))
                 return 2
             }
             return 1
@@ -537,11 +606,38 @@ final class CPU6502 {
         return 0
     }
 
+    private func pushStatus(setBreak: Bool) {
+        var flags = status | Flag.U.rawValue
+        if setBreak {
+            flags |= Flag.B.rawValue
+        } else {
+            flags &= ~Flag.B.rawValue
+        }
+        push(flags)
+    }
+
     private func buildInstructionTable() {
-        instructions = Array(repeating: Instruction(name: "NOP", operate: NOP, addrMode: IMP, mode: .imp, cycles: 2), count: 256)
+        instructions = Array(
+            repeating: Instruction(name: "NOP", operate: NOP, addrMode: IMP, mode: .imp, access: .implied, cycles: 2),
+            count: 256
+        )
+
+        func accessFor(name: String) -> AccessKind {
+            switch name {
+            case "STA", "STX", "STY":
+                return .write
+            case "ASL", "LSR", "ROL", "ROR", "INC", "DEC":
+                return .readModifyWrite
+            case "NOP":
+                return .read
+            default:
+                return .read
+            }
+        }
 
         func set(_ opcode: UInt8, _ name: String, _ op: @escaping () -> UInt8, _ mode: @escaping () -> UInt8, _ kind: AddressingMode, _ cycles: UInt8) {
-            instructions[Int(opcode)] = Instruction(name: name, operate: op, addrMode: mode, mode: kind, cycles: cycles)
+            let access = accessFor(name: name)
+            instructions[Int(opcode)] = Instruction(name: name, operate: op, addrMode: mode, mode: kind, access: access, cycles: cycles)
         }
 
         set(0x00, "BRK", BRK, IMM, .imm, 7)
@@ -710,5 +806,34 @@ final class CPU6502 {
         set(0xF9, "SBC", SBC, ABY, .aby, 4)
         set(0xFD, "SBC", SBC, ABX, .abx, 4)
         set(0xFE, "INC", INC, ABX, .abx, 7)
+
+        // Unofficial NOPs (for test ROM compatibility)
+        set(0x04, "NOP", NOP, ZP0, .zp0, 3)
+        set(0x0C, "NOP", NOP, ABS, .abs, 4)
+        set(0x14, "NOP", NOP, ZPX, .zpx, 4)
+        set(0x1A, "NOP", NOP, IMP, .imp, 2)
+        set(0x1C, "NOP", NOPR, ABX, .abx, 4)
+        set(0x34, "NOP", NOP, ZPX, .zpx, 4)
+        set(0x3A, "NOP", NOP, IMP, .imp, 2)
+        set(0x3C, "NOP", NOPR, ABX, .abx, 4)
+        set(0x44, "NOP", NOP, ZP0, .zp0, 3)
+        set(0x54, "NOP", NOP, ZPX, .zpx, 4)
+        set(0x5A, "NOP", NOP, IMP, .imp, 2)
+        set(0x5C, "NOP", NOPR, ABX, .abx, 4)
+        set(0x64, "NOP", NOP, ZP0, .zp0, 3)
+        set(0x74, "NOP", NOP, ZPX, .zpx, 4)
+        set(0x7A, "NOP", NOP, IMP, .imp, 2)
+        set(0x7C, "NOP", NOPR, ABX, .abx, 4)
+        set(0x80, "NOP", NOP, IMM, .imm, 2)
+        set(0x82, "NOP", NOP, IMM, .imm, 2)
+        set(0x89, "NOP", NOP, IMM, .imm, 2)
+        set(0xC2, "NOP", NOP, IMM, .imm, 2)
+        set(0xD4, "NOP", NOP, ZPX, .zpx, 4)
+        set(0xDA, "NOP", NOP, IMP, .imp, 2)
+        set(0xDC, "NOP", NOPR, ABX, .abx, 4)
+        set(0xE2, "NOP", NOP, IMM, .imm, 2)
+        set(0xF4, "NOP", NOP, ZPX, .zpx, 4)
+        set(0xFA, "NOP", NOP, IMP, .imp, 2)
+        set(0xFC, "NOP", NOPR, ABX, .abx, 4)
     }
 }

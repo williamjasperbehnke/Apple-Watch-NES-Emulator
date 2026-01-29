@@ -1,5 +1,3 @@
-import Foundation
-
 final class MapperNROM: Mapper {
     private let prgBanks: Int
     private let chrBanks: Int
