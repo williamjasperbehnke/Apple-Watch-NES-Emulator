@@ -54,6 +54,8 @@ final class CPU6502 {
     private var addrAbs: UInt16 = 0
     private var addrRel: UInt16 = 0
     private var opcode: UInt8 = 0
+    private var baseHigh: UInt8 = 0
+    private var cycleCounter: Int = 0
 
     private var instructions: [Instruction] = []
 
@@ -100,6 +102,11 @@ final class CPU6502 {
     }
 
     func step() -> Int {
+        if bus?.consumeStallCycle() == true {
+            cycleCounter += 1
+            bus?.tick(cycles: 1)
+            return 1
+        }
         opcode = bus?.cpuReadOpcode(pc) ?? 0
         pc &+= 1
 
@@ -107,6 +114,7 @@ final class CPU6502 {
         let additional1 = instruction.addrMode()
         let additional2 = instruction.operate()
         let cycles = instruction.cycles + (additional1 & additional2)
+        cycleCounter += Int(cycles)
         status |= Flag.U.rawValue
         if let bus, bus.isIrqPending(), getFlag(.I) == 0 {
             bus.acknowledgeIrq()
@@ -121,6 +129,10 @@ final class CPU6502 {
     }
 
     private func write(_ addr: UInt16, _ data: UInt8) {
+        if addr == 0x4014 {
+            let extra = cycleCounter % 2
+            bus?.requestStall(cycles: 513 + extra)
+        }
         bus?.cpuWrite(addr, data)
     }
 
@@ -146,6 +158,11 @@ final class CPU6502 {
         }
     }
 
+    private func setZN(_ value: UInt8) {
+        setFlag(.Z, value == 0)
+        setFlag(.N, (value & 0x80) != 0)
+    }
+
     private func fetch() -> UInt8 {
         if instructions[Int(opcode)].mode != .imp {
             fetched = read(addrAbs)
@@ -157,6 +174,10 @@ final class CPU6502 {
     private func IMP() -> UInt8 {
         fetched = a
         return 0
+    }
+
+    private func impliedDummyRead() {
+        _ = read(pc)
     }
 
     private func IMM() -> UInt8 {
@@ -191,6 +212,7 @@ final class CPU6502 {
         pc &+= 1
         let hi = read(pc)
         pc &+= 1
+        baseHigh = hi
         addrAbs = UInt16(hi) << 8 | UInt16(lo)
         return 0
     }
@@ -200,15 +222,21 @@ final class CPU6502 {
         pc &+= 1
         let hi = read(pc)
         pc &+= 1
+        baseHigh = hi
         let base = UInt16(hi) << 8 | UInt16(lo)
-        addrAbs = base &+ UInt16(x)
+        if usesHighByteBugForStore() {
+            let low = UInt8(lo) &+ x
+            addrAbs = (UInt16(baseHigh) << 8) | UInt16(low)
+        } else {
+            addrAbs = base &+ UInt16(x)
+        }
         let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
         let access = instructions[Int(opcode)].access
         if access == .write || (access == .read && pageCross) || access == .readModifyWrite {
             let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
             _ = read(dummyAddr)
         }
-        return pageCross ? 1 : 0
+        return (access == .read && pageCross) ? 1 : 0
     }
 
     private func ABY() -> UInt8 {
@@ -216,15 +244,21 @@ final class CPU6502 {
         pc &+= 1
         let hi = read(pc)
         pc &+= 1
+        baseHigh = hi
         let base = UInt16(hi) << 8 | UInt16(lo)
-        addrAbs = base &+ UInt16(y)
+        if usesHighByteBugForStore() {
+            let low = UInt8(lo) &+ y
+            addrAbs = (UInt16(baseHigh) << 8) | UInt16(low)
+        } else {
+            addrAbs = base &+ UInt16(y)
+        }
         let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
         let access = instructions[Int(opcode)].access
         if access == .write || (access == .read && pageCross) || access == .readModifyWrite {
             let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
             _ = read(dummyAddr)
         }
-        return pageCross ? 1 : 0
+        return (access == .read && pageCross) ? 1 : 0
     }
 
     private func IND() -> UInt8 {
@@ -253,15 +287,21 @@ final class CPU6502 {
         pc &+= 1
         let lo = read(UInt16(t))
         let hi = read(UInt16(UInt8(t &+ 1)))
+        baseHigh = hi
         let base = UInt16(hi) << 8 | UInt16(lo)
-        addrAbs = base &+ UInt16(y)
+        if usesHighByteBugForStore() {
+            let low = UInt8(lo) &+ y
+            addrAbs = (UInt16(baseHigh) << 8) | UInt16(low)
+        } else {
+            addrAbs = base &+ UInt16(y)
+        }
         let pageCross = (addrAbs & 0xFF00) != (base & 0xFF00)
         let access = instructions[Int(opcode)].access
         if (access == .write && pageCross) || (access == .read && pageCross) || (access == .readModifyWrite && pageCross) {
             let dummyAddr = (base & 0xFF00) | (addrAbs & 0x00FF)
             _ = read(dummyAddr)
         }
-        return pageCross ? 1 : 0
+        return (access == .read && pageCross) ? 1 : 0
     }
 
     private func REL() -> UInt8 {
@@ -275,24 +315,20 @@ final class CPU6502 {
 
     // Operations
     private func ADC() -> UInt8 {
-        let value = fetch()
-        let sum = UInt16(a) + UInt16(value) + UInt16(getFlag(.C))
-        setFlag(.C, sum > 0xFF)
-        setFlag(.Z, UInt8(sum & 0x00FF) == 0)
-        setFlag(.V, (~(UInt16(a) ^ UInt16(value)) & (UInt16(a) ^ sum) & 0x0080) != 0)
-        setFlag(.N, (sum & 0x80) != 0)
-        a = UInt8(sum & 0x00FF)
+        adcWith(fetch())
         return 1
     }
 
     private func AND() -> UInt8 {
         a &= fetch()
-        setFlag(.Z, a == 0)
-        setFlag(.N, (a & 0x80) != 0)
+        setZN(a)
         return 1
     }
 
     private func ASL() -> UInt8 {
+        if instructions[Int(opcode)].mode == .imp {
+            impliedDummyRead()
+        }
         let value = fetch()
         if instructions[Int(opcode)].mode != .imp {
             write(addrAbs, value)
@@ -300,8 +336,7 @@ final class CPU6502 {
         let result = UInt16(value) << 1
         setFlag(.C, (result & 0xFF00) != 0)
         let output = UInt8(result & 0x00FF)
-        setFlag(.Z, output == 0)
-        setFlag(.N, (output & 0x80) != 0)
+        setZN(output)
         if instructions[Int(opcode)].mode == .imp {
             a = output
         } else {
@@ -329,6 +364,7 @@ final class CPU6502 {
     }
 
     private func BRK() -> UInt8 {
+        impliedDummyRead()
         pc &+= 1
         push(UInt8((pc >> 8) & 0xFF))
         push(UInt8(pc & 0xFF))
@@ -342,17 +378,16 @@ final class CPU6502 {
         return 0
     }
 
-    private func CLC() -> UInt8 { setFlag(.C, false); return 0 }
-    private func CLD() -> UInt8 { setFlag(.D, false); return 0 }
-    private func CLI() -> UInt8 { setFlag(.I, false); return 0 }
-    private func CLV() -> UInt8 { setFlag(.V, false); return 0 }
+    private func CLC() -> UInt8 { impliedDummyRead(); setFlag(.C, false); return 0 }
+    private func CLD() -> UInt8 { impliedDummyRead(); setFlag(.D, false); return 0 }
+    private func CLI() -> UInt8 { impliedDummyRead(); setFlag(.I, false); return 0 }
+    private func CLV() -> UInt8 { impliedDummyRead(); setFlag(.V, false); return 0 }
 
     private func CMP() -> UInt8 {
         let value = fetch()
         let temp = UInt16(a) &- UInt16(value)
         setFlag(.C, a >= value)
-        setFlag(.Z, UInt8(temp & 0x00FF) == 0)
-        setFlag(.N, (temp & 0x0080) != 0)
+        setZN(UInt8(temp & 0x00FF))
         return 1
     }
 
@@ -360,8 +395,7 @@ final class CPU6502 {
         let value = fetch()
         let temp = UInt16(x) &- UInt16(value)
         setFlag(.C, x >= value)
-        setFlag(.Z, UInt8(temp & 0x00FF) == 0)
-        setFlag(.N, (temp & 0x0080) != 0)
+        setZN(UInt8(temp & 0x00FF))
         return 0
     }
 
@@ -369,8 +403,7 @@ final class CPU6502 {
         let value = fetch()
         let temp = UInt16(y) &- UInt16(value)
         setFlag(.C, y >= value)
-        setFlag(.Z, UInt8(temp & 0x00FF) == 0)
-        setFlag(.N, (temp & 0x0080) != 0)
+        setZN(UInt8(temp & 0x00FF))
         return 0
     }
 
@@ -381,29 +414,27 @@ final class CPU6502 {
         }
         let result = value &- 1
         write(addrAbs, result)
-        setFlag(.Z, result == 0)
-        setFlag(.N, (result & 0x80) != 0)
+        setZN(result)
         return 0
     }
 
     private func DEX() -> UInt8 {
+        impliedDummyRead()
         x &-= 1
-        setFlag(.Z, x == 0)
-        setFlag(.N, (x & 0x80) != 0)
+        setZN(x)
         return 0
     }
 
     private func DEY() -> UInt8 {
+        impliedDummyRead()
         y &-= 1
-        setFlag(.Z, y == 0)
-        setFlag(.N, (y & 0x80) != 0)
+        setZN(y)
         return 0
     }
 
     private func EOR() -> UInt8 {
         a ^= fetch()
-        setFlag(.Z, a == 0)
-        setFlag(.N, (a & 0x80) != 0)
+        setZN(a)
         return 1
     }
 
@@ -414,22 +445,21 @@ final class CPU6502 {
         }
         let result = value &+ 1
         write(addrAbs, result)
-        setFlag(.Z, result == 0)
-        setFlag(.N, (result & 0x80) != 0)
+        setZN(result)
         return 0
     }
 
     private func INX() -> UInt8 {
+        impliedDummyRead()
         x &+= 1
-        setFlag(.Z, x == 0)
-        setFlag(.N, (x & 0x80) != 0)
+        setZN(x)
         return 0
     }
 
     private func INY() -> UInt8 {
+        impliedDummyRead()
         y &+= 1
-        setFlag(.Z, y == 0)
-        setFlag(.N, (y & 0x80) != 0)
+        setZN(y)
         return 0
     }
 
@@ -443,39 +473,42 @@ final class CPU6502 {
         push(UInt8((pc >> 8) & 0xFF))
         push(UInt8(pc & 0xFF))
         pc = addrAbs
+
+        // AccuracyCoin: JSR leaves the *second operand byte* on the data bus
+        bus?.setCpuDataBus(UInt8((addrAbs >> 8) & 0xFF))
+
         return 0
     }
 
     private func LDA() -> UInt8 {
         a = fetch()
-        setFlag(.Z, a == 0)
-        setFlag(.N, (a & 0x80) != 0)
+        setZN(a)
         return 1
     }
 
     private func LDX() -> UInt8 {
         x = fetch()
-        setFlag(.Z, x == 0)
-        setFlag(.N, (x & 0x80) != 0)
+        setZN(x)
         return 1
     }
 
     private func LDY() -> UInt8 {
         y = fetch()
-        setFlag(.Z, y == 0)
-        setFlag(.N, (y & 0x80) != 0)
+        setZN(y)
         return 1
     }
 
     private func LSR() -> UInt8 {
+        if instructions[Int(opcode)].mode == .imp {
+            impliedDummyRead()
+        }
         let value = fetch()
         if instructions[Int(opcode)].mode != .imp {
             write(addrAbs, value)
         }
         setFlag(.C, (value & 0x01) != 0)
         let result = value >> 1
-        setFlag(.Z, result == 0)
-        setFlag(.N, false)
+        setZN(result)
         if instructions[Int(opcode)].mode == .imp {
             a = result
         } else {
@@ -485,6 +518,7 @@ final class CPU6502 {
     }
 
     private func NOP() -> UInt8 {
+        impliedDummyRead()
         if instructions[Int(opcode)].mode != .imp {
             _ = fetch()
         }
@@ -492,29 +526,211 @@ final class CPU6502 {
     }
 
     private func NOPR() -> UInt8 {
+        impliedDummyRead()
         if instructions[Int(opcode)].mode != .imp {
             _ = fetch()
         }
         return 1
     }
 
-    private func ORA() -> UInt8 {
-        a |= fetch()
-        setFlag(.Z, a == 0)
-        setFlag(.N, (a & 0x80) != 0)
+    // Unofficial instructions
+    private func SLO() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        let result = UInt8((UInt16(value) << 1) & 0x00FF)
+        setFlag(.C, (value & 0x80) != 0)
+        write(addrAbs, result)
+        a |= result
+        setZN(a)
+        return 0
+    }
+
+    private func RLA() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        let carryIn = getFlag(.C)
+        setFlag(.C, (value & 0x80) != 0)
+        let result = UInt8((UInt16(value) << 1) & 0x00FF) | carryIn
+        write(addrAbs, result)
+        a &= result
+        setZN(a)
+        return 0
+    }
+
+    private func SRE() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        setFlag(.C, (value & 0x01) != 0)
+        let result = value >> 1
+        write(addrAbs, result)
+        a ^= result
+        setZN(a)
+        return 0
+    }
+
+    private func RRA() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        let carryIn = getFlag(.C)
+        setFlag(.C, (value & 0x01) != 0)
+        let result = UInt8((UInt16(carryIn) << 7) | UInt16(value >> 1))
+        write(addrAbs, result)
+        adcWith(result)
+        return 0
+    }
+
+    private func SAX() -> UInt8 {
+        write(addrAbs, a & x)
+        return 0
+    }
+
+    private func LAX() -> UInt8 {
+        let value = fetch()
+        a = value
+        x = value
+        setZN(value)
         return 1
     }
 
-    private func PHA() -> UInt8 { push(a); return 0 }
-    private func PHP() -> UInt8 { pushStatus(setBreak: true); return 0 }
-    private func PLA() -> UInt8 { a = pop(); setFlag(.Z, a == 0); setFlag(.N, (a & 0x80) != 0); return 0 }
+    private func DCP() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        let result = value &- 1
+        write(addrAbs, result)
+        let temp = UInt16(a) &- UInt16(result)
+        setFlag(.C, a >= result)
+        setZN(UInt8(temp & 0x00FF))
+        return 0
+    }
+
+    private func ISC() -> UInt8 {
+        let value = fetch()
+        write(addrAbs, value)
+        let result = value &+ 1
+        write(addrAbs, result)
+        sbcWith(result)
+        return 0
+    }
+
+    private func ANC() -> UInt8 {
+        a &= fetch()
+        setZN(a)
+        setFlag(.C, (a & 0x80) != 0)
+        return 0
+    }
+
+    private func ASR() -> UInt8 {
+        a &= fetch()
+        setFlag(.C, (a & 0x01) != 0)
+        a >>= 1
+        setZN(a)
+        return 0
+    }
+
+    private func ARR() -> UInt8 {
+        a &= fetch()
+        let carryIn = getFlag(.C)
+        let result = UInt8((UInt16(carryIn) << 7) | UInt16(a >> 1))
+        a = result
+        setZN(a)
+        setFlag(.C, (a & 0x40) != 0)
+        setFlag(.V, ((a >> 5) ^ (a >> 6)) & 0x01 != 0)
+        return 0
+    }
+
+    private func ANE() -> UInt8 {
+        let value = fetch()
+        a = (a | 0xEE) & x & value
+        setZN(a)
+        return 0
+    }
+
+    private func LXA() -> UInt8 {
+        let value = fetch()
+        a = (a | 0xEE) & value
+        x = a
+        setZN(a)
+        return 0
+    }
+
+    private func AXS() -> UInt8 {
+        let value = fetch()
+        let temp = (a & x) &- value
+        setFlag(.C, (a & x) >= value)
+        x = temp
+        setZN(x)
+        return 0
+    }
+
+    private func SHA() -> UInt8 {
+        let high = UInt8((addrAbs >> 8) & 0xFF)
+        let value = a & x & (high &+ 1)
+        write(addrAbs, value)
+        return 0
+    }
+
+    private func SHX() -> UInt8 {
+        let high = UInt8((addrAbs >> 8) & 0xFF)
+        let value = x & (high &+ 1)
+        write(addrAbs, value)
+        return 0
+    }
+
+    private func SHY() -> UInt8 {
+        let high = UInt8((addrAbs >> 8) & 0xFF)
+        let value = y & (high &+ 1)
+        write(addrAbs, value)
+        return 0
+    }
+
+    private func SHS() -> UInt8 {
+        sp = a & x
+        let high = UInt8((addrAbs >> 8) & 0xFF)
+        let value = sp & (high &+ 1)
+        write(addrAbs, value)
+        return 0
+    }
+
+    private func LAE() -> UInt8 {
+        let value = fetch() & sp
+        a = value
+        x = value
+        sp = value
+        setZN(value)
+        return 1
+    }
+
+    private func usesHighByteBugForStore() -> Bool {
+        switch opcode {
+        case 0x93, 0x9F, 0x9B, 0x9C, 0x9E:
+            return true
+        default:
+            return false
+        }
+    }
+
+
+
+    private func ORA() -> UInt8 {
+        a |= fetch()
+        setZN(a)
+        return 1
+    }
+
+    private func PHA() -> UInt8 { impliedDummyRead(); push(a); return 0 }
+    private func PHP() -> UInt8 { impliedDummyRead(); pushStatus(setBreak: true); return 0 }
+    private func PLA() -> UInt8 { impliedDummyRead(); a = pop(); setZN(a); return 0 }
     private func PLP() -> UInt8 {
+        impliedDummyRead()
         status = pop()
         setFlag(.U, true)
         return 0
     }
 
     private func ROL() -> UInt8 {
+        if instructions[Int(opcode)].mode == .imp {
+            impliedDummyRead()
+        }
         let value = fetch()
         if instructions[Int(opcode)].mode != .imp {
             write(addrAbs, value)
@@ -522,8 +738,7 @@ final class CPU6502 {
         let result = UInt16(value) << 1 | UInt16(getFlag(.C))
         setFlag(.C, (result & 0xFF00) != 0)
         let output = UInt8(result & 0x00FF)
-        setFlag(.Z, output == 0)
-        setFlag(.N, (output & 0x80) != 0)
+        setZN(output)
         if instructions[Int(opcode)].mode == .imp {
             a = output
         } else {
@@ -533,6 +748,9 @@ final class CPU6502 {
     }
 
     private func ROR() -> UInt8 {
+        if instructions[Int(opcode)].mode == .imp {
+            impliedDummyRead()
+        }
         let value = fetch()
         if instructions[Int(opcode)].mode != .imp {
             write(addrAbs, value)
@@ -540,8 +758,7 @@ final class CPU6502 {
         let result = UInt16(getFlag(.C)) << 7 | UInt16(value >> 1)
         setFlag(.C, (value & 0x01) != 0)
         let output = UInt8(result & 0x00FF)
-        setFlag(.Z, output == 0)
-        setFlag(.N, (output & 0x80) != 0)
+        setZN(output)
         if instructions[Int(opcode)].mode == .imp {
             a = output
         } else {
@@ -551,6 +768,7 @@ final class CPU6502 {
     }
 
     private func RTI() -> UInt8 {
+        impliedDummyRead()
         status = pop()
         setFlag(.U, true)
         let lo = pop()
@@ -560,6 +778,7 @@ final class CPU6502 {
     }
 
     private func RTS() -> UInt8 {
+        impliedDummyRead()
         let lo = pop()
         let hi = pop()
         pc = (UInt16(hi) << 8 | UInt16(lo)) &+ 1
@@ -567,30 +786,24 @@ final class CPU6502 {
     }
 
     private func SBC() -> UInt8 {
-        let value = fetch() ^ 0xFF
-        let sum = UInt16(a) + UInt16(value) + UInt16(getFlag(.C))
-        setFlag(.C, (sum & 0xFF00) != 0)
-        setFlag(.Z, UInt8(sum & 0x00FF) == 0)
-        setFlag(.V, (sum ^ UInt16(a)) & (sum ^ UInt16(value)) & 0x0080 != 0)
-        setFlag(.N, (sum & 0x80) != 0)
-        a = UInt8(sum & 0x00FF)
+        sbcWith(fetch())
         return 1
     }
 
-    private func SEC() -> UInt8 { setFlag(.C, true); return 0 }
-    private func SED() -> UInt8 { setFlag(.D, true); return 0 }
-    private func SEI() -> UInt8 { setFlag(.I, true); return 0 }
+    private func SEC() -> UInt8 { impliedDummyRead(); setFlag(.C, true); return 0 }
+    private func SED() -> UInt8 { impliedDummyRead(); setFlag(.D, true); return 0 }
+    private func SEI() -> UInt8 { impliedDummyRead(); setFlag(.I, true); return 0 }
 
     private func STA() -> UInt8 { write(addrAbs, a); return 0 }
     private func STX() -> UInt8 { write(addrAbs, x); return 0 }
     private func STY() -> UInt8 { write(addrAbs, y); return 0 }
 
-    private func TAX() -> UInt8 { x = a; setFlag(.Z, x == 0); setFlag(.N, (x & 0x80) != 0); return 0 }
-    private func TAY() -> UInt8 { y = a; setFlag(.Z, y == 0); setFlag(.N, (y & 0x80) != 0); return 0 }
-    private func TSX() -> UInt8 { x = sp; setFlag(.Z, x == 0); setFlag(.N, (x & 0x80) != 0); return 0 }
-    private func TXA() -> UInt8 { a = x; setFlag(.Z, a == 0); setFlag(.N, (a & 0x80) != 0); return 0 }
-    private func TXS() -> UInt8 { sp = x; return 0 }
-    private func TYA() -> UInt8 { a = y; setFlag(.Z, a == 0); setFlag(.N, (a & 0x80) != 0); return 0 }
+    private func TAX() -> UInt8 { impliedDummyRead(); x = a; setZN(x); return 0 }
+    private func TAY() -> UInt8 { impliedDummyRead(); y = a; setZN(y); return 0 }
+    private func TSX() -> UInt8 { impliedDummyRead(); x = sp; setZN(x); return 0 }
+    private func TXA() -> UInt8 { impliedDummyRead(); a = x; setZN(a); return 0 }
+    private func TXS() -> UInt8 { impliedDummyRead(); sp = x; return 0 }
+    private func TYA() -> UInt8 { impliedDummyRead(); a = y; setZN(a); return 0 }
 
     private func branch(_ condition: Bool) -> UInt8 {
         if condition {
@@ -616,6 +829,25 @@ final class CPU6502 {
         push(flags)
     }
 
+    private func adcWith(_ value: UInt8) {
+        let sum = UInt16(a) + UInt16(value) + UInt16(getFlag(.C))
+        setFlag(.C, sum > 0xFF)
+        setFlag(.Z, UInt8(sum & 0x00FF) == 0)
+        setFlag(.V, (~(UInt16(a) ^ UInt16(value)) & (UInt16(a) ^ sum) & 0x0080) != 0)
+        setFlag(.N, (sum & 0x80) != 0)
+        a = UInt8(sum & 0x00FF)
+    }
+
+    private func sbcWith(_ value: UInt8) {
+        let inv = value ^ 0xFF
+        let sum = UInt16(a) + UInt16(inv) + UInt16(getFlag(.C))
+        setFlag(.C, (sum & 0xFF00) != 0)
+        setFlag(.Z, UInt8(sum & 0x00FF) == 0)
+        setFlag(.V, (sum ^ UInt16(a)) & (sum ^ UInt16(inv)) & 0x0080 != 0)
+        setFlag(.N, (sum & 0x80) != 0)
+        a = UInt8(sum & 0x00FF)
+    }
+
     private func buildInstructionTable() {
         instructions = Array(
             repeating: Instruction(name: "NOP", operate: NOP, addrMode: IMP, mode: .imp, access: .implied, cycles: 2),
@@ -624,9 +856,9 @@ final class CPU6502 {
 
         func accessFor(name: String) -> AccessKind {
             switch name {
-            case "STA", "STX", "STY":
+            case "STA", "STX", "STY", "SAX", "SHA", "SHX", "SHY", "SHS":
                 return .write
-            case "ASL", "LSR", "ROL", "ROR", "INC", "DEC":
+            case "ASL", "LSR", "ROL", "ROR", "INC", "DEC", "SLO", "RLA", "SRE", "RRA", "DCP", "ISC":
                 return .readModifyWrite
             case "NOP":
                 return .read
@@ -835,5 +1067,82 @@ final class CPU6502 {
         set(0xF4, "NOP", NOP, ZPX, .zpx, 4)
         set(0xFA, "NOP", NOP, IMP, .imp, 2)
         set(0xFC, "NOP", NOPR, ABX, .abx, 4)
+
+        // Unofficial opcodes
+        set(0x03, "SLO", SLO, IZX, .izx, 8)
+        set(0x07, "SLO", SLO, ZP0, .zp0, 5)
+        set(0x0F, "SLO", SLO, ABS, .abs, 6)
+        set(0x13, "SLO", SLO, IZY, .izy, 8)
+        set(0x17, "SLO", SLO, ZPX, .zpx, 6)
+        set(0x1B, "SLO", SLO, ABY, .aby, 7)
+        set(0x1F, "SLO", SLO, ABX, .abx, 7)
+
+        set(0x23, "RLA", RLA, IZX, .izx, 8)
+        set(0x27, "RLA", RLA, ZP0, .zp0, 5)
+        set(0x2F, "RLA", RLA, ABS, .abs, 6)
+        set(0x33, "RLA", RLA, IZY, .izy, 8)
+        set(0x37, "RLA", RLA, ZPX, .zpx, 6)
+        set(0x3B, "RLA", RLA, ABY, .aby, 7)
+        set(0x3F, "RLA", RLA, ABX, .abx, 7)
+
+        set(0x43, "SRE", SRE, IZX, .izx, 8)
+        set(0x47, "SRE", SRE, ZP0, .zp0, 5)
+        set(0x4F, "SRE", SRE, ABS, .abs, 6)
+        set(0x53, "SRE", SRE, IZY, .izy, 8)
+        set(0x57, "SRE", SRE, ZPX, .zpx, 6)
+        set(0x5B, "SRE", SRE, ABY, .aby, 7)
+        set(0x5F, "SRE", SRE, ABX, .abx, 7)
+
+        set(0x63, "RRA", RRA, IZX, .izx, 8)
+        set(0x67, "RRA", RRA, ZP0, .zp0, 5)
+        set(0x6F, "RRA", RRA, ABS, .abs, 6)
+        set(0x73, "RRA", RRA, IZY, .izy, 8)
+        set(0x77, "RRA", RRA, ZPX, .zpx, 6)
+        set(0x7B, "RRA", RRA, ABY, .aby, 7)
+        set(0x7F, "RRA", RRA, ABX, .abx, 7)
+
+        set(0x83, "SAX", SAX, IZX, .izx, 6)
+        set(0x87, "SAX", SAX, ZP0, .zp0, 3)
+        set(0x8F, "SAX", SAX, ABS, .abs, 4)
+        set(0x97, "SAX", SAX, ZPY, .zpy, 4)
+
+        set(0xA3, "LAX", LAX, IZX, .izx, 6)
+        set(0xA7, "LAX", LAX, ZP0, .zp0, 3)
+        set(0xAF, "LAX", LAX, ABS, .abs, 4)
+        set(0xB3, "LAX", LAX, IZY, .izy, 5)
+        set(0xB7, "LAX", LAX, ZPY, .zpy, 4)
+        set(0xBF, "LAX", LAX, ABY, .aby, 4)
+
+        set(0xC3, "DCP", DCP, IZX, .izx, 8)
+        set(0xC7, "DCP", DCP, ZP0, .zp0, 5)
+        set(0xCF, "DCP", DCP, ABS, .abs, 6)
+        set(0xD3, "DCP", DCP, IZY, .izy, 8)
+        set(0xD7, "DCP", DCP, ZPX, .zpx, 6)
+        set(0xDB, "DCP", DCP, ABY, .aby, 7)
+        set(0xDF, "DCP", DCP, ABX, .abx, 7)
+
+        set(0xE3, "ISC", ISC, IZX, .izx, 8)
+        set(0xE7, "ISC", ISC, ZP0, .zp0, 5)
+        set(0xEF, "ISC", ISC, ABS, .abs, 6)
+        set(0xF3, "ISC", ISC, IZY, .izy, 8)
+        set(0xF7, "ISC", ISC, ZPX, .zpx, 6)
+        set(0xFB, "ISC", ISC, ABY, .aby, 7)
+        set(0xFF, "ISC", ISC, ABX, .abx, 7)
+
+        set(0x0B, "ANC", ANC, IMM, .imm, 2)
+        set(0x2B, "ANC", ANC, IMM, .imm, 2)
+        set(0x4B, "ASR", ASR, IMM, .imm, 2)
+        set(0x6B, "ARR", ARR, IMM, .imm, 2)
+        set(0x8B, "ANE", ANE, IMM, .imm, 2)
+        set(0xAB, "LXA", LXA, IMM, .imm, 2)
+        set(0xCB, "AXS", AXS, IMM, .imm, 2)
+        set(0xEB, "SBC", SBC, IMM, .imm, 2)
+
+        set(0x9F, "SHA", SHA, ABY, .aby, 5)
+        set(0x93, "SHA", SHA, IZY, .izy, 6)
+        set(0x9E, "SHX", SHX, ABY, .aby, 5)
+        set(0x9C, "SHY", SHY, ABX, .abx, 5)
+        set(0x9B, "SHS", SHS, ABY, .aby, 5)
+        set(0xBB, "LAE", LAE, ABY, .aby, 4)
     }
 }
