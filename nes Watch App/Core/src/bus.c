@@ -187,9 +187,8 @@ void bus_ack_irq(Bus *bus) {
 }
 
 void bus_tick(Bus *bus, int cycles) {
-    if (bus->apu) {
-        apu_step(bus->apu, cycles);
-    }
+    (void)bus;
+    (void)cycles;
 }
 
 void bus_set_cpu_bus(Bus *bus, uint8_t value) {

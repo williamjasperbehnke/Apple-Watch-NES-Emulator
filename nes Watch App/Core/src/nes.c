@@ -5,6 +5,10 @@
 
 #include "../include/nes_internal.h"
 
+static uint8_t nes_bus_read(void *context, uint16_t addr) {
+    return bus_cpu_read((Bus *)context, addr);
+}
+
 NESRef nes_create(void) {
     NES *nes = (NES *)calloc(1, sizeof(NES));
     if (!nes) {
@@ -16,6 +20,7 @@ NESRef nes_create(void) {
     nes->bus.apu = &nes->apu;
     cpu_init(&nes->cpu);
     nes->cpu.bus = &nes->bus;
+    apu_set_read_callback(&nes->apu, nes_bus_read, &nes->bus);
     return nes;
 }
 
@@ -48,6 +53,7 @@ void nes_reset(NESRef nes) {
     if (!nes) {
         return;
     }
+    apu_reset(&nes->apu);
     cpu_reset(&nes->cpu);
 }
 
@@ -91,4 +97,11 @@ float nes_apu_next_sample(NESRef nes, double sample_rate) {
         return 0.0f;
     }
     return apu_next_sample(&nes->apu, sample_rate);
+}
+
+void nes_apu_fill_buffer(NESRef nes, double sample_rate, float *out, int count) {
+    if (!nes) {
+        return;
+    }
+    apu_fill_buffer(&nes->apu, sample_rate, out, count);
 }

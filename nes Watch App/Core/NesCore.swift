@@ -14,6 +14,7 @@ typealias NESRef = OpaquePointer
 @_silgen_name("nes_framebuffer_height") private func nes_framebuffer_height() -> Int32
 @_silgen_name("nes_set_button") private func nes_set_button(_ nes: NESRef, _ button: UInt8, _ pressed: Bool)
 @_silgen_name("nes_apu_next_sample") private func nes_apu_next_sample(_ nes: NESRef, _ sampleRate: Double) -> Float
+@_silgen_name("nes_apu_fill_buffer") private func nes_apu_fill_buffer(_ nes: NESRef, _ sampleRate: Double, _ out: UnsafeMutablePointer<Float>, _ count: Int32)
 
 final class EmulatorCore {
     private var nes: NESRef?
@@ -92,6 +93,11 @@ final class CAudioEngine {
     private var format: AVAudioFormat?
     private var sourceNode: AVAudioSourceNode?
     private var observers: [NSObjectProtocol] = []
+    private var ring = AudioRingBuffer(capacity: 88200)
+    private var sampleRate: Double = 44100
+    private var samplesPerFrame: Int = 735
+    private let audioQueue = DispatchQueue(label: "nes.audio.queue", qos: .userInitiated)
+    private var audioTimer: DispatchSourceTimer?
 
     init(nes: NESRef) {
         self.nes = nes
@@ -111,6 +117,7 @@ final class CAudioEngine {
 
     func stop() {
         engine.pause()
+        stopProducer()
     }
 
     func shutdown() {
@@ -119,6 +126,7 @@ final class CAudioEngine {
             engine.detach(node)
             sourceNode = nil
         }
+        stopProducer()
     }
 
     deinit {
@@ -155,13 +163,15 @@ final class CAudioEngine {
         let channelCount = outputFormat.channelCount > 0 ? outputFormat.channelCount : 2
         let activeFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channelCount)!
         format = activeFormat
+        self.sampleRate = sampleRate
+        self.samplesPerFrame = max(1, Int(sampleRate / 60.0))
+        ring = AudioRingBuffer(capacity: max(4096, Int(sampleRate * 3)))
 
         if sourceNode == nil {
             let source = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
                 guard let self else { return noErr }
                 let bufferList = UnsafeMutableAudioBufferListPointer(audioBufferList)
                 let frameCountInt = Int(frameCount)
-                let rate = activeFormat.sampleRate
                 if bufferList.count == 0 {
                     return noErr
                 }
@@ -169,8 +179,9 @@ final class CAudioEngine {
                 guard let firstData = bufferList[0].mData else { return noErr }
                 bufferList[0].mDataByteSize = UInt32(bytes)
                 let firstSamples = firstData.assumingMemoryBound(to: Float.self)
-                for i in 0..<frameCountInt {
-                    firstSamples[i] = nes_apu_next_sample(self.nes, rate)
+                let read = self.ring.read(into: firstSamples, count: frameCountInt)
+                if read < frameCountInt {
+                    firstSamples.advanced(by: read).initialize(repeating: 0, count: frameCountInt - read)
                 }
                 if bufferList.count > 1 {
                     for bufferIndex in 1..<bufferList.count {
@@ -201,6 +212,8 @@ final class CAudioEngine {
                 }
             }
         }
+
+        startProducer()
     }
 
     private func rebuildEngine() {
@@ -210,6 +223,8 @@ final class CAudioEngine {
         }
         sourceNode = nil
         format = nil
+        ring.clear()
+        stopProducer()
         engine = AVAudioEngine()
         start(rebuildIfNeeded: false)
     }
@@ -224,5 +239,125 @@ final class CAudioEngine {
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
             }
         }
+    }
+
+    func enqueueSamples() {
+        let count = samplesPerFrame
+        if count <= 0 {
+            return
+        }
+        let targetFill = max(count * 2, Int(sampleRate * 0.25))
+        var attempts = 0
+        while ring.availableToRead < targetFill && ring.availableToWrite >= count && attempts < 4 {
+            var temp = Array(repeating: Float(0), count: count)
+            temp.withUnsafeMutableBufferPointer { buffer in
+                guard let base = buffer.baseAddress else { return }
+                nes_apu_fill_buffer(nes, sampleRate, base, Int32(count))
+            }
+            _ = ring.write(temp, count: count)
+            attempts += 1
+        }
+    }
+
+    private func startProducer() {
+        if audioTimer != nil {
+            return
+        }
+        let timer = DispatchSource.makeTimerSource(queue: audioQueue)
+        timer.schedule(deadline: .now(), repeating: 1.0 / 240.0)
+        timer.setEventHandler { [weak self] in
+            self?.enqueueSamples()
+        }
+        audioTimer = timer
+        timer.resume()
+    }
+
+    private func stopProducer() {
+        audioTimer?.cancel()
+        audioTimer = nil
+    }
+
+}
+
+private final class AudioRingBuffer {
+    private var buffer: [Float]
+    private var readIndex = 0
+    private var writeIndex = 0
+    private var count = 0
+    private let lock = NSLock()
+
+    init(capacity: Int) {
+        buffer = Array(repeating: 0, count: max(1, capacity))
+    }
+
+    func clear() {
+        lock.lock()
+        readIndex = 0
+        writeIndex = 0
+        count = 0
+        lock.unlock()
+    }
+
+    var availableToRead: Int {
+        lock.lock()
+        let value = count
+        lock.unlock()
+        return value
+    }
+
+    var availableToWrite: Int {
+        lock.lock()
+        let value = buffer.count - count
+        lock.unlock()
+        return value
+    }
+
+    func write(_ samples: [Float], count writeCount: Int) -> Int {
+        if writeCount <= 0 {
+            return 0
+        }
+        lock.lock()
+        let capacity = buffer.count
+        let space = capacity - count
+        let toWrite = min(writeCount, space)
+        if toWrite > 0 {
+            let first = min(toWrite, capacity - writeIndex)
+            for i in 0..<first {
+                buffer[writeIndex + i] = samples[i]
+            }
+            if toWrite > first {
+                for i in 0..<(toWrite - first) {
+                    buffer[i] = samples[first + i]
+                }
+            }
+            writeIndex = (writeIndex + toWrite) % capacity
+            count += toWrite
+        }
+        lock.unlock()
+        return toWrite
+    }
+
+    func read(into out: UnsafeMutablePointer<Float>, count readCount: Int) -> Int {
+        if readCount <= 0 {
+            return 0
+        }
+        lock.lock()
+        let capacity = buffer.count
+        let toRead = min(readCount, count)
+        if toRead > 0 {
+            let first = min(toRead, capacity - readIndex)
+            for i in 0..<first {
+                out[i] = buffer[readIndex + i]
+            }
+            if toRead > first {
+                for i in 0..<(toRead - first) {
+                    out[first + i] = buffer[i]
+                }
+            }
+            readIndex = (readIndex + toRead) % capacity
+            count -= toRead
+        }
+        lock.unlock()
+        return toRead
     }
 }
