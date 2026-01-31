@@ -36,11 +36,10 @@ The menu lists the ROM names without the `.nes` extension.
 - Mapper 3 (CNROM)
 
 ## Audio
-Audio is generated from a simplified APU implementation (pulse channels only). Audio is produced via `AVAudioEngine` using a source node.
+Audio uses a full APU implementation (pulse, triangle, noise, DMC) and is produced via `AVAudioEngine` using a source node. The audio producer runs on a dedicated queue, with a small ring buffer to smooth timing.
 
 ## Known issues
-- Audio may cut out after loading a CNROM game and then switching to another game (seen after Donkey Kong -> start -> Tetris). A restart of the watch app restores audio.
-- Some games may exhibit incomplete audio due to missing triangle/noise/DMC channels.
+- Crackling can still occur in some games (notably Super Mario Bros) under load.
 
 ## Troubleshooting
 - If a ROM doesn’t load, check the mapper ID and ensure it’s supported.
