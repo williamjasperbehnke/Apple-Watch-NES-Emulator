@@ -88,56 +88,141 @@ final class EmulatorCore {
 
 final class CAudioEngine {
     private let nes: NESRef
-    private let engine = AVAudioEngine()
-    private let format: AVAudioFormat
+    private var engine = AVAudioEngine()
+    private var format: AVAudioFormat?
     private var sourceNode: AVAudioSourceNode?
+    private var observers: [NSObjectProtocol] = []
 
     init(nes: NESRef) {
         self.nes = nes
-        self.format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+            self?.handleInterruption(note)
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
+            self?.handleMediaServicesReset()
+        })
     }
 
     func start() {
-        if sourceNode != nil { return }
-
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.ambient, options: [.mixWithOthers])
-            try session.setActive(true)
-        } catch {
-            // Best-effort on watchOS.
-        }
-
-        let source = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
-            guard let self else { return noErr }
-            let bufferList = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            guard let buffer = bufferList.first else { return noErr }
-            let frameCountInt = Int(frameCount)
-            let samples = buffer.mData!.assumingMemoryBound(to: Float.self)
-            let rate = self.format.sampleRate
-            for i in 0..<frameCountInt {
-                samples[i] = nes_apu_next_sample(self.nes, rate)
-            }
-            return noErr
-        }
-
-        sourceNode = source
-        engine.attach(source)
-        engine.connect(source, to: engine.mainMixerNode, format: format)
-        engine.mainMixerNode.outputVolume = 0.8
-
-        do {
-            try engine.start()
-        } catch {
-            // Leave engine stopped on failure.
-        }
+        start(rebuildIfNeeded: true)
     }
 
     func stop() {
+        engine.pause()
+    }
+
+    func shutdown() {
         engine.stop()
         if let node = sourceNode {
             engine.detach(node)
             sourceNode = nil
+        }
+    }
+
+    deinit {
+        let center = NotificationCenter.default
+        for obs in observers {
+            center.removeObserver(obs)
+        }
+    }
+
+    private func handleInterruption(_ note: Notification) {
+        guard let info = note.userInfo,
+              let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        if type == .began {
+            engine.pause()
+            return
+        }
+        let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+        if options.contains(.shouldResume) {
+            start()
+        }
+    }
+
+    private func handleMediaServicesReset() {
+        rebuildEngine()
+    }
+
+    private func start(rebuildIfNeeded: Bool) {
+        let outputFormat = engine.outputNode.inputFormat(forBus: 0)
+        let sampleRate = outputFormat.sampleRate > 0 ? outputFormat.sampleRate : 44100
+        let channelCount = outputFormat.channelCount > 0 ? outputFormat.channelCount : 2
+        let activeFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channelCount)!
+        format = activeFormat
+
+        if sourceNode == nil {
+            let source = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
+                guard let self else { return noErr }
+                let bufferList = UnsafeMutableAudioBufferListPointer(audioBufferList)
+                let frameCountInt = Int(frameCount)
+                let rate = activeFormat.sampleRate
+                if bufferList.count == 0 {
+                    return noErr
+                }
+                let bytes = frameCountInt * MemoryLayout<Float>.size
+                guard let firstData = bufferList[0].mData else { return noErr }
+                bufferList[0].mDataByteSize = UInt32(bytes)
+                let firstSamples = firstData.assumingMemoryBound(to: Float.self)
+                for i in 0..<frameCountInt {
+                    firstSamples[i] = nes_apu_next_sample(self.nes, rate)
+                }
+                if bufferList.count > 1 {
+                    for bufferIndex in 1..<bufferList.count {
+                        guard let mData = bufferList[bufferIndex].mData else { continue }
+                        bufferList[bufferIndex].mDataByteSize = UInt32(bytes)
+                        mData.copyMemory(from: firstData, byteCount: bytes)
+                    }
+                }
+                return noErr
+            }
+
+            sourceNode = source
+            engine.attach(source)
+            engine.connect(source, to: engine.mainMixerNode, format: activeFormat)
+        }
+
+        engine.mainMixerNode.outputVolume = 0.8
+
+        ensureOutputConnection()
+
+        if !engine.isRunning {
+            do {
+                engine.prepare()
+                try engine.start()
+            } catch {
+                if rebuildIfNeeded {
+                    rebuildEngine()
+                }
+            }
+        }
+    }
+
+    private func rebuildEngine() {
+        engine.stop()
+        if let node = sourceNode {
+            engine.detach(node)
+        }
+        sourceNode = nil
+        format = nil
+        engine = AVAudioEngine()
+        start(rebuildIfNeeded: false)
+    }
+
+    private func ensureOutputConnection() {
+        let points = engine.outputConnectionPoints(for: engine.mainMixerNode, outputBus: 0)
+        if points.isEmpty {
+            let outputFormat = engine.outputNode.inputFormat(forBus: 0)
+            if outputFormat.sampleRate > 0 && outputFormat.channelCount > 0 {
+                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outputFormat)
+            } else {
+                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
+            }
         }
     }
 }
