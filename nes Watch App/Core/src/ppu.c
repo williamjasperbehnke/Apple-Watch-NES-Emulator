@@ -49,56 +49,54 @@ static uint32_t ppu_sprite_palette_color(PPU *ppu, int palette, int color) {
     return nes_palette[paletteIndex % 64];
 }
 
-static void ppu_render_background(PPU *ppu) {
+static void ppu_render_background_scanline(PPU *ppu, int y) {
     int width = NES_WIDTH;
-    int height = NES_HEIGHT;
     bool showBackground = (ppu->mask & 0x08) != 0;
     bool showLeftBackground = (ppu->mask & 0x02) != 0;
     uint16_t patternBase = (ppu->ctrl & 0x10) != 0 ? 0x1000 : 0x0000;
     int baseNTX = (ppu->ctrl & 0x01) != 0 ? 1 : 0;
     int baseNTY = (ppu->ctrl & 0x02) != 0 ? 1 : 0;
 
-    for (int y = 0; y < height; y++) {
-        int scrolledY = (y + (int)ppu->scrollY) & 0x1FF;
-        int tileY = (scrolledY / 8) % 30;
-        int fineY = scrolledY % 8;
-        int ntY = ((scrolledY / 240) + baseNTY) & 0x01;
-        for (int x = 0; x < width; x++) {
-            if (!showBackground || (x < 8 && !showLeftBackground)) {
-                uint32_t pixelColor = ppu_palette_color(ppu, 0, 0);
-                ppu->frameBuffer.pixels[y * width + x] = pixelColor;
-                ppu->bgColorIndex[y * width + x] = 0;
-                continue;
-            }
+    int scrolledY = (y + (int)ppu->scrollY) & 0x1FF;
+    int tileY = (scrolledY / 8) % 30;
+    int fineY = scrolledY % 8;
+    int ntY = ((scrolledY / 240) + baseNTY) & 0x01;
 
-            int scrolledX = (x + (int)ppu->scrollX) & 0x1FF;
-            int tileX = (scrolledX / 8) % 32;
-            int fineX = scrolledX % 8;
-            int ntX = ((scrolledX / 256) + baseNTX) & 0x01;
-            uint16_t baseNameTable = (uint16_t)(0x2000 + ((ntY << 1) | ntX) * 0x400);
-            uint16_t nameAddr = (uint16_t)(baseNameTable + tileY * 32 + tileX);
-            uint8_t tileId = ppu_read_memory(ppu, nameAddr);
-            uint16_t patternAddr = (uint16_t)(patternBase + (uint16_t)tileId * 16 + (uint16_t)fineY);
-            uint8_t plane0 = ppu_read_memory(ppu, patternAddr);
-            uint8_t plane1 = ppu_read_memory(ppu, patternAddr + 8);
-            int bit = 7 - fineX;
-            int color = ((plane1 >> bit) & 0x01) << 1 | ((plane0 >> bit) & 0x01);
-
-            uint16_t attrAddr = (uint16_t)(baseNameTable + 0x03C0 + (tileY / 4) * 8 + (tileX / 4));
-            uint8_t attr = ppu_read_memory(ppu, attrAddr);
-            int quadrantX = (tileX % 4) / 2;
-            int quadrantY = (tileY % 4) / 2;
-            int shift = (quadrantY * 2 + quadrantX) * 2;
-            int palette = (attr >> shift) & 0x03;
-
-            uint32_t pixelColor = ppu_palette_color(ppu, palette, color);
+    for (int x = 0; x < width; x++) {
+        if (!showBackground || (x < 8 && !showLeftBackground)) {
+            uint32_t pixelColor = ppu_palette_color(ppu, 0, 0);
             ppu->frameBuffer.pixels[y * width + x] = pixelColor;
-            ppu->bgColorIndex[y * width + x] = (uint8_t)color;
+            ppu->bgColorIndex[y * width + x] = 0;
+            continue;
         }
+
+        int scrolledX = (x + (int)ppu->scrollX) & 0x1FF;
+        int tileX = (scrolledX / 8) % 32;
+        int fineX = scrolledX % 8;
+        int ntX = ((scrolledX / 256) + baseNTX) & 0x01;
+        uint16_t baseNameTable = (uint16_t)(0x2000 + ((ntY << 1) | ntX) * 0x400);
+        uint16_t nameAddr = (uint16_t)(baseNameTable + tileY * 32 + tileX);
+        uint8_t tileId = ppu_read_memory(ppu, nameAddr);
+        uint16_t patternAddr = (uint16_t)(patternBase + (uint16_t)tileId * 16 + (uint16_t)fineY);
+        uint8_t plane0 = ppu_read_memory(ppu, patternAddr);
+        uint8_t plane1 = ppu_read_memory(ppu, patternAddr + 8);
+        int bit = 7 - fineX;
+        int color = ((plane1 >> bit) & 0x01) << 1 | ((plane0 >> bit) & 0x01);
+
+        uint16_t attrAddr = (uint16_t)(baseNameTable + 0x03C0 + (tileY / 4) * 8 + (tileX / 4));
+        uint8_t attr = ppu_read_memory(ppu, attrAddr);
+        int quadrantX = (tileX % 4) / 2;
+        int quadrantY = (tileY % 4) / 2;
+        int shift = (quadrantY * 2 + quadrantX) * 2;
+        int palette = (attr >> shift) & 0x03;
+
+        uint32_t pixelColor = ppu_palette_color(ppu, palette, color);
+        ppu->frameBuffer.pixels[y * width + x] = pixelColor;
+        ppu->bgColorIndex[y * width + x] = (uint8_t)color;
     }
 }
 
-static void ppu_render_sprites(PPU *ppu) {
+static void ppu_render_sprites_scanline(PPU *ppu, int y) {
     bool showSprites = (ppu->mask & 0x10) != 0;
     bool showLeftSprites = (ppu->mask & 0x04) != 0;
     if (!showSprites) {
@@ -106,7 +104,6 @@ static void ppu_render_sprites(PPU *ppu) {
     }
 
     int width = NES_WIDTH;
-    int height = NES_HEIGHT;
     int spriteHeight = (ppu->ctrl & 0x20) != 0 ? 16 : 8;
     uint16_t spriteTable = (ppu->ctrl & 0x08) != 0 ? 0x1000 : 0x0000;
 
@@ -117,7 +114,7 @@ static void ppu_render_sprites(PPU *ppu) {
         uint8_t attr = ppu->oam[base + 2];
         int spriteX = (int)ppu->oam[base + 3];
 
-        if (spriteY >= height || spriteX >= width) {
+        if (y < spriteY || y >= spriteY + spriteHeight) {
             continue;
         }
 
@@ -126,61 +123,55 @@ static void ppu_render_sprites(PPU *ppu) {
         bool flipH = (attr & 0x40) != 0;
         bool flipV = (attr & 0x80) != 0;
 
-        for (int row = 0; row < spriteHeight; row++) {
-            int y = spriteY + row;
-            if (y < 0 || y >= height) {
+        int row = y - spriteY;
+        int spriteRow = flipV ? (spriteHeight - 1 - row) : row;
+        uint16_t tileIndex;
+        uint16_t patternBase;
+        int fineY;
+
+        if (spriteHeight == 16) {
+            uint16_t table = (tileId & 0x01) != 0 ? 0x1000 : 0x0000;
+            patternBase = table;
+            uint16_t baseTile = (uint16_t)(tileId & 0xFE);
+            tileIndex = (uint16_t)(baseTile + (spriteRow / 8));
+            fineY = spriteRow % 8;
+        } else {
+            patternBase = spriteTable;
+            tileIndex = tileId;
+            fineY = spriteRow;
+        }
+
+        uint16_t patternAddr = (uint16_t)(patternBase + tileIndex * 16 + fineY);
+        uint8_t plane0 = ppu_read_memory(ppu, patternAddr);
+        uint8_t plane1 = ppu_read_memory(ppu, patternAddr + 8);
+
+        for (int col = 0; col < 8; col++) {
+            int x = spriteX + col;
+            if (x < 0 || x >= width) {
+                continue;
+            }
+            if (x < 8 && !showLeftSprites) {
                 continue;
             }
 
-            int spriteRow = flipV ? (spriteHeight - 1 - row) : row;
-            uint16_t tileIndex;
-            uint16_t patternBase;
-            int fineY;
-
-            if (spriteHeight == 16) {
-                uint16_t table = (tileId & 0x01) != 0 ? 0x1000 : 0x0000;
-                patternBase = table;
-                uint16_t baseTile = (uint16_t)(tileId & 0xFE);
-                tileIndex = (uint16_t)(baseTile + (spriteRow / 8));
-                fineY = spriteRow % 8;
-            } else {
-                patternBase = spriteTable;
-                tileIndex = tileId;
-                fineY = spriteRow;
+            int fineX = flipH ? col : (7 - col);
+            int bit = fineX;
+            int color = ((plane1 >> bit) & 0x01) << 1 | ((plane0 >> bit) & 0x01);
+            if (color == 0) {
+                continue;
             }
 
-            uint16_t patternAddr = (uint16_t)(patternBase + tileIndex * 16 + fineY);
-            uint8_t plane0 = ppu_read_memory(ppu, patternAddr);
-            uint8_t plane1 = ppu_read_memory(ppu, patternAddr + 8);
-
-            for (int col = 0; col < 8; col++) {
-                int x = spriteX + col;
-                if (x < 0 || x >= width) {
-                    continue;
-                }
-                if (x < 8 && !showLeftSprites) {
-                    continue;
-                }
-
-                int fineX = flipH ? col : (7 - col);
-                int bit = fineX;
-                int color = ((plane1 >> bit) & 0x01) << 1 | ((plane0 >> bit) & 0x01);
-                if (color == 0) {
-                    continue;
-                }
-
-                uint8_t bgIndex = ppu->bgColorIndex[y * width + x];
-                if (priorityBehind && bgIndex != 0) {
-                    continue;
-                }
-
-                if (i == 0 && bgIndex != 0 && (ppu->mask & 0x08) != 0) {
-                    ppu->status |= 0x40;
-                }
-
-                uint32_t pixelColor = ppu_sprite_palette_color(ppu, palette, color);
-                ppu->frameBuffer.pixels[y * width + x] = pixelColor;
+            uint8_t bgIndex = ppu->bgColorIndex[y * width + x];
+            if (priorityBehind && bgIndex != 0) {
+                continue;
             }
+
+            if (i == 0 && (ppu->mask & 0x08) != 0) {
+                ppu->status |= 0x40;
+            }
+
+            uint32_t pixelColor = ppu_sprite_palette_color(ppu, palette, color);
+            ppu->frameBuffer.pixels[y * width + x] = pixelColor;
         }
     }
 }
@@ -282,6 +273,11 @@ void ppu_tick(PPU *ppu) {
         ppu->status &= 0x1F;
     }
 
+    if (ppu->cycle == 0 && ppu->scanline >= 0 && ppu->scanline < 240) {
+        ppu_render_background_scanline(ppu, ppu->scanline);
+        ppu_render_sprites_scanline(ppu, ppu->scanline);
+    }
+
     ppu->cycle += 1;
     if (ppu->cycle >= 341) {
         ppu->cycle = 0;
@@ -289,8 +285,6 @@ void ppu_tick(PPU *ppu) {
         if (ppu->scanline >= 262) {
             ppu->scanline = 0;
             ppu->frameComplete = true;
-            ppu_render_background(ppu);
-            ppu_render_sprites(ppu);
         }
     }
 }

@@ -27,10 +27,11 @@ struct ContentView: View {
                     selectedIndex: $selectedIndex,
                     crownValue: $crownValue
                 ) { romName in
-                    viewModel.stop()
-                    viewModel.loadRom(named: romName)
-                    viewModel.start()
-                    showingMenu = false
+                    viewModel.loadRom(named: romName, autoStart: true) { success in
+                        if success {
+                            showingMenu = false
+                        }
+                    }
                 }
             } else {
                 emulatorView

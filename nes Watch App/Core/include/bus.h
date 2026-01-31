@@ -15,6 +15,7 @@ typedef struct Bus {
     Controller controller;
 
     uint8_t cpuRam[2048];
+    uint8_t prgRam[8192];
     uint8_t dataBus;
 
     bool irqPending;

@@ -14,6 +14,11 @@ static uint8_t bus_cpu_read_internal(Bus *bus, uint16_t addr) {
         bus->dataBus = value;
         return value;
     }
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        uint8_t value = bus->prgRam[addr & 0x1FFF];
+        bus->dataBus = value;
+        return value;
+    }
     if (addr <= 0x3FFF) {
         uint16_t reg = (uint16_t)(0x2000 + (addr & 0x0007));
         uint8_t value = bus->ppu ? ppu_cpu_read(bus->ppu, reg) : bus->dataBus;
@@ -122,12 +127,29 @@ void bus_cpu_write(Bus *bus, uint16_t addr, uint8_t data) {
                     m->shiftCount = 0;
                 }
             }
+        } else if (bus->cartridge->mapperType == MAPPER_CNROM && addr >= 0x8000) {
+            int chrBankCount = (int)(bus->cartridge->chrSize / (8 * 1024));
+            uint8_t bank = data;
+            if (chrBankCount > 0) {
+                if ((chrBankCount & (chrBankCount - 1)) == 0) {
+                    bank = (uint8_t)(bank & (uint8_t)(chrBankCount - 1));
+                } else {
+                    bank = (uint8_t)(bank % chrBankCount);
+                }
+            } else {
+                bank = 0;
+            }
+            bus->cartridge->mapperCnrom.chrBank = bank;
         }
         return;
     }
 
     if (addr <= 0x1FFF) {
         bus->cpuRam[addr & 0x07FF] = data;
+        return;
+    }
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+        bus->prgRam[addr & 0x1FFF] = data;
         return;
     }
     if (addr <= 0x3FFF) {

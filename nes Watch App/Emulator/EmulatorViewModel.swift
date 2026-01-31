@@ -24,21 +24,34 @@ final class EmulatorViewModel: ObservableObject {
         loadRom(named: first)
     }
 
-    func loadRom(named name: String) {
+    func loadRom(named name: String, autoStart: Bool = false, completion: ((Bool) -> Void)? = nil) {
+        stop()
         DispatchQueue.global(qos: .userInitiated).async {
             let url = Bundle.main.url(forResource: name, withExtension: "nes", subdirectory: "Roms")
                 ?? Bundle.main.url(forResource: name, withExtension: "nes")
             guard let url else {
-                DispatchQueue.main.async { self.status = "Missing .nes file in app bundle." }
+                DispatchQueue.main.async {
+                    self.status = "Missing .nes file in app bundle."
+                    completion?(false)
+                }
                 return
             }
             do {
                 let data = try Data(contentsOf: url)
                 guard self.core.loadRom(data) else {
-                    DispatchQueue.main.async { self.status = "Unsupported ROM format or mapper." }
+                    DispatchQueue.main.async {
+                        self.status = "Unsupported ROM format or mapper."
+                        completion?(false)
+                    }
                     return
                 }
-                DispatchQueue.main.async { self.status = "ROM loaded" }
+                DispatchQueue.main.async {
+                    self.status = "ROM loaded"
+                    completion?(true)
+                    if autoStart {
+                        self.start()
+                    }
+                }
                 self.emuQueue.async {
                     self.core.stepFrame()
                     let image = self.core.currentFrameImage()
@@ -47,7 +60,10 @@ final class EmulatorViewModel: ObservableObject {
                     }
                 }
             } catch {
-                DispatchQueue.main.async { self.status = "Failed to load ROM: \(error.localizedDescription)" }
+                DispatchQueue.main.async {
+                    self.status = "Failed to load ROM: \(error.localizedDescription)"
+                    completion?(false)
+                }
             }
         }
     }

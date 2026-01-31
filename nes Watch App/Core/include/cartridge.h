@@ -1,12 +1,14 @@
 #ifndef NESC_CARTRIDGE_H
 #define NESC_CARTRIDGE_H
 
-#include "mmc1.h"
-#include "nrom.h"
+#include "mapper/cnrom.h"
+#include "mapper/mmc1.h"
+#include "mapper/nrom.h"
 
 typedef enum {
     MAPPER_NROM = 0,
-    MAPPER_MMC1 = 1
+    MAPPER_MMC1 = 1,
+    MAPPER_CNROM = 3
 } MapperType;
 
 typedef struct {
@@ -19,6 +21,7 @@ typedef struct {
     bool hasChrRam;
     MapperNROM mapperNrom;
     MapperMMC1 mapperMmc1;
+    MapperCNROM mapperCnrom;
     MapperType mapperType;
 } Cartridge;
 
