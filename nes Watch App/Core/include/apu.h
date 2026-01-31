@@ -9,12 +9,26 @@ typedef struct {
     uint8_t lengthCounter;
     bool enabled;
     double phase;
+    // Envelope
+    uint8_t envDivider;
+    uint8_t envDecay;
+    bool envStart;
+    // Sweep
+    uint8_t sweepDivider;
+    uint8_t sweepPeriod;
+    uint8_t sweepShift;
+    bool sweepEnabled;
+    bool sweepNegate;
+    bool sweepReload;
+    bool sweepMute;
+    bool sweepOnesComplement;
 } PulseChannel;
 
 typedef struct {
     PulseChannel pulse1;
     PulseChannel pulse2;
     int frameCounterCycles;
+    bool frameCounterStep;
 } APU;
 
 void apu_init(APU *apu);
