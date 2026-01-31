@@ -6,27 +6,27 @@ final class EmulatorViewModel: ObservableObject {
     @Published var frameImage: CGImage?
     @Published var status: String = "Idle"
 
-    private let nes = NES()
+    private let core = EmulatorCore()
     private var timer: DispatchSourceTimer?
     private let emuQueue = DispatchQueue(label: "nes.emulator.queue", qos: .userInitiated)
+    private var audioEngine: CAudioEngine?
 
     func loadDefaultRom() {
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let url = Bundle.main.url(forResource: "AccuracyCoin", withExtension: "nes") else {
-                DispatchQueue.main.async { self.status = "Missing AccuracyCoin.nes in app bundle." }
+            guard let url = Bundle.main.url(forResource: "DigDug", withExtension: "nes") else {
+                DispatchQueue.main.async { self.status = "Missing .nes file in app bundle." }
                 return
             }
             do {
                 let data = try Data(contentsOf: url)
-                guard let cart = Cartridge(data: data) else {
+                guard self.core.loadRom(data) else {
                     DispatchQueue.main.async { self.status = "Unsupported ROM format or mapper." }
                     return
                 }
-                self.nes.loadCartridge(cart)
                 DispatchQueue.main.async { self.status = "ROM loaded" }
                 self.emuQueue.async {
-                    self.nes.stepFrame()
-                    let image = self.nes.currentFrameImage()
+                    self.core.stepFrame()
+                    let image = self.core.currentFrameImage()
                     DispatchQueue.main.async {
                         self.frameImage = image
                     }
@@ -43,22 +43,27 @@ final class EmulatorViewModel: ObservableObject {
         timer.schedule(deadline: .now(), repeating: 1.0 / 60.0)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.nes.stepFrame()
-            let image = self.nes.currentFrameImage()
+            self.core.stepFrame()
+            let image = self.core.currentFrameImage()
             Task { @MainActor in
                 self.frameImage = image
             }
         }
         self.timer = timer
+        if audioEngine == nil {
+            audioEngine = core.makeAudioEngine()
+        }
+        audioEngine?.start()
         timer.resume()
     }
 
     func stop() {
         timer?.cancel()
         timer = nil
+        audioEngine?.stop()
     }
 
     func setButton(_ button: Controller.Button, pressed: Bool) {
-        nes.setButton(button, pressed: pressed)
+        core.setButton(button, pressed: pressed)
     }
 }
