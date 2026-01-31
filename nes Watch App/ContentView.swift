@@ -26,16 +26,6 @@ struct ContentView: View {
                 }
 
                 VStack {
-                    HStack {
-                        Spacer()
-                        Button("Play") { viewModel.start() }
-                            .buttonStyle(CompactIconButtonStyle(systemName: "play.fill"))
-                        Button("Pause") { viewModel.stop() }
-                            .buttonStyle(CompactIconButtonStyle(systemName: "pause.fill"))
-                        Spacer()
-                    }
-                    .padding(.top, -4)
-
                     Spacer()
 
                     HStack {
@@ -83,6 +73,7 @@ struct ContentView: View {
         .ignoresSafeArea()
         .onAppear {
             viewModel.loadDefaultRom()
+            viewModel.start()
         }
     }
 }
@@ -118,20 +109,6 @@ private struct PressableButton: View {
         case .secondary:
             return Color.gray.opacity(0.7)
         }
-    }
-}
-
-private struct CompactIconButtonStyle: ButtonStyle {
-    let systemName: String
-
-    func makeBody(configuration: Configuration) -> some View {
-        Image(systemName: systemName)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.black.opacity(configuration.isPressed ? 0.8 : 0.6))
-            .foregroundColor(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
