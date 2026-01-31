@@ -26,6 +26,8 @@ final class EmulatorViewModel: ObservableObject {
 
     func loadRom(named name: String, autoStart: Bool = false, completion: ((Bool) -> Void)? = nil) {
         stop()
+        audioEngine?.shutdown()
+        audioEngine = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let url = Bundle.main.url(forResource: name, withExtension: "nes", subdirectory: "Roms")
                 ?? Bundle.main.url(forResource: name, withExtension: "nes")

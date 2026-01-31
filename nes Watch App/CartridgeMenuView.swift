@@ -13,15 +13,10 @@ struct CartridgeMenuView: View {
 
             VStack(spacing: 10) {
                 HStack {
+                    Text("Cartridges \(selectedIndex + 1)/\(max(romNames.count, 1))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.white.opacity(0.8))
                     Spacer()
-                    HStack(spacing: 40) {
-                        Text("Cartridges")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(.white.opacity(0.8))
-                        Text("\(selectedIndex + 1)/\(max(romNames.count, 1))")
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.6))
-                    }
                     Spacer()
                 }
 
@@ -60,43 +55,38 @@ struct CartridgeMenuView: View {
                             .padding(.vertical, 4)
                         }
                         .frame(maxHeight: 180)
+                        .focusable(true)
+                        .focused($crownFocused)
+                        .digitalCrownRotation(
+                            $crownValue,
+                            from: 0,
+                            through: max(0, Double(romNames.count - 1)),
+                            by: 1,
+                            sensitivity: .medium,
+                            isContinuous: false,
+                            isHapticFeedbackEnabled: true
+                        )
+                        .onChange(of: crownValue) { newValue in
+                            let index = Int(newValue.rounded())
+                            if index != selectedIndex {
+                                selectedIndex = min(max(0, index), max(0, romNames.count - 1))
+                            }
+                        }
                         .onChange(of: selectedIndex) { value in
                             withAnimation(.easeOut(duration: 0.15)) {
                                 proxy.scrollTo(value, anchor: .center)
                             }
                         }
                         .onAppear {
+                            crownValue = Double(selectedIndex)
+                            crownFocused = true
                             proxy.scrollTo(selectedIndex, anchor: .center)
                         }
                     }
 
-                    Text("Turn Crown to browse")
-                        .font(.caption2)
-                        .foregroundColor(.white.opacity(0.6))
                 }
             }
             .padding(10)
-        }
-        .focusable(true)
-        .focused($crownFocused)
-        .digitalCrownRotation(
-            $crownValue,
-            from: 0,
-            through: max(0, Double(romNames.count - 1)),
-            by: 1,
-            sensitivity: .medium,
-            isContinuous: false,
-            isHapticFeedbackEnabled: true
-        )
-        .onChange(of: crownValue) { newValue in
-            let index = Int(newValue.rounded())
-            if index != selectedIndex {
-                selectedIndex = min(max(0, index), max(0, romNames.count - 1))
-            }
-        }
-        .onAppear {
-            crownValue = Double(selectedIndex)
-            crownFocused = true
         }
     }
 

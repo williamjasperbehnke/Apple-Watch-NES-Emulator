@@ -5,8 +5,6 @@
 //  Created by William Behnke on 2026-01-29.
 //
 
-import AVFoundation
-import AVKit
 import SwiftUI
 
 struct ContentView: View {
@@ -14,13 +12,9 @@ struct ContentView: View {
     @State private var selectedIndex: Int = 0
     @State private var crownValue: Double = 0
     @State private var showingMenu: Bool = true
-    @State private var timeHider = AVPlayer()
 
     var body: some View {
         ZStack {
-            VideoPlayer(player: timeHider)
-                .frame(width: 0, height: 0)
-                .opacity(0.01)
             if showingMenu {
                 CartridgeMenuView(
                     romNames: viewModel.romNames,
@@ -52,7 +46,6 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .onAppear {
-            timeHider.play()
             if viewModel.romNames.isEmpty {
                 viewModel.loadDefaultRom()
                 viewModel.start()
