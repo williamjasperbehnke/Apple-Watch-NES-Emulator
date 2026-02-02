@@ -1,19 +1,19 @@
 # watch_nes
 
-NES emulator for watchOS with a SwiftUI front end and a C core.
+NES emulator for watchOS with a SwiftUI front end and a C++ core.
 
 ## Overview
-This project runs classic NES ROMs on Apple Watch. The core is written in C for performance and portability, while the UI and system integration use SwiftUI. ROMs are bundled in the app and selected with the Digital Crown. Rendering is scanline-based and presented as a CGImage each frame.
+This project runs classic NES ROMs on Apple Watch. The core is written in C++ for performance and portability, while the UI and system integration use SwiftUI. ROMs are bundled in the app and selected with the Digital Crown. Rendering is scanline-based and presented as a CGImage each frame.
 
 ## Features
-- C core with CPU, PPU, APU, bus, cartridge, and mapper support.
+- C++ core with CPU, PPU, APU, bus, cartridge, and mapper support.
 - SwiftUI UI with crown-scrolled ROM menu and on-watch controls.
 - Scanline rendering path for background + sprites.
 - ROMs bundled inside the app target.
 
 ## Project layout
-- `nes/nes Watch App/Core/include` and `nes/nes Watch App/Core/src`: C core (CPU/PPU/APU/bus/cartridge/mappers).
-- `nes/nes Watch App/Core/NesCore.swift`: Swift wrapper over the C core.
+- `nes/nes Watch App/Core/include` and `nes/nes Watch App/Core/src`: C++ core (CPU/PPU/APU/bus/cartridge/mappers).
+- `nes/nes Watch App/Core/NesCore.swift`: Swift wrapper over the C++ core.
 - `nes/nes Watch App/Emulator/EmulatorViewModel.swift`: runtime loop, audio engine lifecycle.
 - `nes/nes Watch App/CartridgeMenuView.swift`: ROM selection UI.
 - `nes/nes Watch App/ContentView.swift`: emulator screen + controls.
