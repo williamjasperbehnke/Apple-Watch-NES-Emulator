@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var selectedIndex: Int = 0
     @State private var crownValue: Double = 0
     @State private var showingMenu: Bool = true
+    @State private var joystickDirection: JoystickDirection? = nil
 
     var body: some View {
         ZStack {
@@ -76,21 +77,8 @@ struct ContentView: View {
                     Spacer()
 
                     HStack {
-                        VStack(spacing: 4) {
-                            PressableButton(label: "▲") { pressed in
-                                viewModel.setButton(.up, pressed: pressed)
-                            }
-                            HStack(spacing: 4) {
-                                PressableButton(label: "◀") { pressed in
-                                    viewModel.setButton(.left, pressed: pressed)
-                                }
-                                PressableButton(label: "▶") { pressed in
-                                    viewModel.setButton(.right, pressed: pressed)
-                                }
-                            }
-                            PressableButton(label: "▼") { pressed in
-                                viewModel.setButton(.down, pressed: pressed)
-                            }
+                        JoystickView { direction in
+                            updateJoystick(direction)
                         }
 
                         Spacer()
@@ -118,11 +106,97 @@ struct ContentView: View {
             }
         }
     }
+
+    private func updateJoystick(_ direction: JoystickDirection?) {
+        if joystickDirection == direction {
+            return
+        }
+        if let previous = joystickDirection {
+            setJoystick(previous, pressed: false)
+        }
+        joystickDirection = direction
+        if let current = direction {
+            setJoystick(current, pressed: true)
+        }
+    }
+
+    private func setJoystick(_ direction: JoystickDirection, pressed: Bool) {
+        switch direction {
+        case .up:
+            viewModel.setButton(.up, pressed: pressed)
+        case .down:
+            viewModel.setButton(.down, pressed: pressed)
+        case .left:
+            viewModel.setButton(.left, pressed: pressed)
+        case .right:
+            viewModel.setButton(.right, pressed: pressed)
+        }
+    }
+}
+
+private enum JoystickDirection {
+    case up
+    case down
+    case left
+    case right
 }
 
 private enum ButtonStyleVariant {
     case primary
     case secondary
+}
+
+private struct JoystickView: View {
+    var onDirectionChanged: (JoystickDirection?) -> Void
+    @State private var thumbOffset: CGSize = .zero
+
+    private let size: CGFloat = 54
+    private let thumbSize: CGFloat = 22
+    private let deadZone: CGFloat = 8
+    private let maxOffset: CGFloat = 16
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.gray.opacity(0.5))
+            Circle()
+                .stroke(Color.white.opacity(0.4), lineWidth: 1)
+
+            Circle()
+                .fill(Color.gray.opacity(0.85))
+                .frame(width: thumbSize, height: thumbSize)
+                .offset(thumbOffset)
+        }
+        .frame(width: size, height: size)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let center = CGPoint(x: size / 2, y: size / 2)
+                    let dx = value.location.x - center.x
+                    let dy = value.location.y - center.y
+                    let distance = sqrt(dx * dx + dy * dy)
+                    if distance < deadZone {
+                        thumbOffset = .zero
+                        onDirectionChanged(nil)
+                        return
+                    }
+
+                    let clampedDistance = min(distance, maxOffset)
+                    let scale = clampedDistance / max(distance, 0.001)
+                    thumbOffset = CGSize(width: dx * scale, height: dy * scale)
+
+                    if abs(dx) > abs(dy) {
+                        onDirectionChanged(dx > 0 ? .right : .left)
+                    } else {
+                        onDirectionChanged(dy > 0 ? .down : .up)
+                    }
+                }
+                .onEnded { _ in
+                    thumbOffset = .zero
+                    onDirectionChanged(nil)
+                }
+        )
+    }
 }
 
 private struct PressableButton: View {
