@@ -26,35 +26,38 @@ struct CartridgeMenuView: View {
                         .foregroundColor(.white.opacity(0.7))
                 } else {
                     ScrollViewReader { proxy in
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 6) {
-                                ForEach(romNames.indices, id: \.self) { index in
-                                    HStack(spacing: 8) {
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(index == selectedIndex ? Color.white : Color.white.opacity(0.25))
-                                            .frame(width: 4)
+                        VStack(spacing: 0) {
+                            ScrollView(.vertical, showsIndicators: false) {
+                                VStack(spacing: 6) {
+                                    ForEach(romNames.indices, id: \.self) { index in
+                                        HStack(spacing: 8) {
+                                            RoundedRectangle(cornerRadius: 2)
+                                                .fill(index == selectedIndex ? Color.white : Color.white.opacity(0.25))
+                                                .frame(width: 4)
 
-                                        Text(romNames[index])
-                                            .font(.caption2.weight(index == selectedIndex ? .semibold : .regular))
-                                            .foregroundColor(index == selectedIndex ? .white : .white.opacity(0.7))
-                                            .lineLimit(1)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .background(index == selectedIndex ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .id(index)
-                                    .onTapGesture {
-                                        selectedIndex = index
-                                        crownValue = Double(index)
-                                        onSelect(romNames[index])
+                                            Text(romNames[index])
+                                                .font(.caption2.weight(index == selectedIndex ? .semibold : .regular))
+                                                .foregroundColor(index == selectedIndex ? .white : .white.opacity(0.7))
+                                                .lineLimit(1)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .background(index == selectedIndex ? Color.white.opacity(0.12) : Color.white.opacity(0.03))
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .id(index)
+                                        .onTapGesture {
+                                            selectedIndex = index
+                                            crownValue = Double(index)
+                                            onSelect(romNames[index])
+                                        }
                                     }
                                 }
+                                .padding(.vertical, 4)
                             }
-                            .padding(.vertical, 4)
+                            .frame(maxHeight: 180)
+                            .scrollDisabled(true)
                         }
-                        .frame(maxHeight: 180)
                         .focusable(true)
                         .focused($crownFocused)
                         .digitalCrownRotation(
@@ -66,15 +69,15 @@ struct CartridgeMenuView: View {
                             isContinuous: false,
                             isHapticFeedbackEnabled: true
                         )
-                        .onChange(of: crownValue) { newValue in
-                            let index = Int(newValue.rounded())
+                        .onChange(of: crownValue) {
+                            let index = Int(crownValue.rounded())
                             if index != selectedIndex {
                                 selectedIndex = min(max(0, index), max(0, romNames.count - 1))
                             }
                         }
-                        .onChange(of: selectedIndex) { value in
+                        .onChange(of: selectedIndex) {
                             withAnimation(.easeOut(duration: 0.15)) {
-                                proxy.scrollTo(value, anchor: .center)
+                                proxy.scrollTo(selectedIndex, anchor: .center)
                             }
                         }
                         .onAppear {
