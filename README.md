@@ -1,4 +1,4 @@
-# watch_nes
+# Apple Watch NES Emulator
 
 NES emulator for watchOS with a SwiftUI front end and a C++ core.
 
